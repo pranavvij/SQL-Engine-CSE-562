@@ -22,8 +22,10 @@ import iterators.SelectionIterator;
 import iterators.SortMergeIterator;
 import iterators.TableScanIterator;
 
+import bPlusTree.SecondaryBPlusTree;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.Function;
+import net.sf.jsqlparser.expression.PrimitiveValue;
 import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.schema.Column;
@@ -331,10 +333,51 @@ public class SelectWrapper {
 	public DefaultIterator pushDownSelectPredicate(Table table, DefaultIterator iter) {
 		List<Expression> tempExp = Optimzer.getExpressionForSelectionPredicate(table,
 				SchemaStructure.schema.get(table.getName()), SchemaStructure.whrexpressions);
-		
-		
-		if (tempExp != null && tempExp.size() > 0) {
-			Expression exp = Utils.conquerExpression(tempExp);
+
+		if (tempExp == null || tempExp.size() == 0) {
+			return iter;
+		}
+
+		// Route one equality predicate on a secondary-indexed column through the
+		// seek path, replacing the full table scan `iter`. Gated on isInMemory to
+		// match the index-join path and keep disk-mode output unchanged.
+		List<Expression> remaining = new ArrayList<Expression>(tempExp);
+		HashMap<String, SecondaryBPlusTree> secMap = SchemaStructure.secondaryIndexMap.get(table.getName());
+		if (Config.isInMemory && secMap != null) {
+			Expression chosen = null;
+			for (Expression exp : tempExp) {
+				if (!(exp instanceof EqualsTo)) {
+					continue;
+				}
+				EqualsTo eq = (EqualsTo) exp;
+				Column col = null;
+				PrimitiveValue literal = null;
+				if (eq.getLeftExpression() instanceof Column && eq.getRightExpression() instanceof PrimitiveValue) {
+					col = (Column) eq.getLeftExpression();
+					literal = (PrimitiveValue) eq.getRightExpression();
+				} else if (eq.getRightExpression() instanceof Column && eq.getLeftExpression() instanceof PrimitiveValue) {
+					col = (Column) eq.getRightExpression();
+					literal = (PrimitiveValue) eq.getLeftExpression();
+				}
+				if (col == null) {
+					continue;
+				}
+				SecondaryBPlusTree sidx = secMap.get(col.getColumnName());
+				if (sidx == null) {
+					continue;
+				}
+				// posting list already guarantees the match: no re-check needed
+				iter = sidx.search(literal, this.queryColumns.get(table.getName()));
+				chosen = exp;
+				break;
+			}
+			if (chosen != null) {
+				remaining.remove(chosen);
+			}
+		}
+
+		if (remaining.size() > 0) {
+			Expression exp = Utils.conquerExpression(remaining);
 			iter = new SelectionIterator(iter, exp);
 		}
 		return iter;
@@ -464,6 +507,27 @@ public class SelectWrapper {
 					return (Column)equalTo.getLeftExpression();
 				} else {
 					return (Column)equalTo.getRightExpression();
+				}
+			}
+
+			// Same selection for a secondary (non-clustered) index on this table:
+			// the join column being indexed lets the index nested-loop join fire.
+			HashMap<String, SecondaryBPlusTree> secMap =
+					SchemaStructure.secondaryIndexMap.get(tableIterator.tab.getName());
+			if(secMap != null) {
+				if(secMap.containsKey(left[1])) {
+					if(left[0].equals(tableIterator.tab.getName())) {
+						return (Column)equalTo.getLeftExpression();
+					} else {
+						return (Column)equalTo.getRightExpression();
+					}
+				}
+				if(secMap.containsKey(right[1])) {
+					if(right[0].equals(tableIterator.tab.getName())) {
+						return (Column)equalTo.getLeftExpression();
+					} else {
+						return (Column)equalTo.getRightExpression();
+					}
 				}
 			}
 		}
