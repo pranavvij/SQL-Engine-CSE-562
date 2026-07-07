@@ -11,6 +11,7 @@ import java.util.List;
 
 import FileUtils.WriteOutputFile;
 import bPlusTree.BPlusTreeBuilder;
+import bPlusTree.SecondaryBPlusTree;
 import iterators.FileReaderIterator;
 import iterators.TableScanIterator;
 import net.sf.jsqlparser.expression.PrimitiveValue;
@@ -63,6 +64,17 @@ public class CreateWrapper {
 							btree.writeMapToFile();
 							SchemaStructure.bTreeMap.put(tbal.getName(), btree);
 							break;
+						}
+					} else {
+						// Non-primary index -> build a secondary (non-clustered)
+						// index per column. No sortedness assumption; posting lists.
+						for(String secondaryKey: index.getColumnsNames()) {
+							FileReaderIterator iter = new FileReaderIterator(tbal);
+							SecondaryBPlusTree sidx = new SecondaryBPlusTree(iter, tbal, cdef, secondaryKey);
+							sidx.build();
+							SchemaStructure.secondaryIndexMap
+									.computeIfAbsent(tbal.getName(), k -> new java.util.HashMap<>())
+									.put(secondaryKey, sidx);
 						}
 					}
 				}
