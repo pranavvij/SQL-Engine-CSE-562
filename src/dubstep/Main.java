@@ -37,37 +37,49 @@ class Main {
 			}
 		}
 		System.out.println("$> "); // print a prompt
+		// Read stdin ONCE. Recreating the BufferedInputStream every iteration drops
+		// input: the stream reads ahead in blocks, so the first one buffers the
+		// following statements and the next fresh stream then blocks at EOF.
+		BufferedInputStream buf = new BufferedInputStream(System.in);
+		CreateWrapper cw = new CreateWrapper();
 		while (true) {
-			
-			/* code to parse stdin as a string and then feed to JSQL parser */
-			BufferedInputStream buf = new BufferedInputStream(System.in);	
+
+			/* accumulate bytes up to the ';' terminator (59); stop at EOF (-1) */
 			ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			int result = buf.read();
-			while(result != 59) {
+			while (result != 59 && result != -1) {
 				baos.write((byte) result);
 				result = buf.read();
 			}
-			if(baos.size()<=1) {
-				break;
-			}
-			String querystr = baos.toString();
-			CreateWrapper cw = new CreateWrapper();
-			CCJSqlParser parser = new CCJSqlParser(new StringReader(querystr));
-			Statement query = parser.Statement();
-			if (query instanceof Select) {
-				Select select = (Select) query;
-				SelectBody selectbody = select.getSelectBody();
-				if (selectbody instanceof PlainSelect) {
-					PlainSelect plainSelect = (PlainSelect) selectbody;
-					new SelectWrapper(plainSelect).parse();
-				} else {
-					Union union = (Union) selectbody;
-					new UnionWrapper(union).parse();
+
+			String querystr = baos.toString().trim();
+			if (!querystr.isEmpty()) {
+				try {
+					CCJSqlParser parser = new CCJSqlParser(new StringReader(querystr));
+					Statement query = parser.Statement();
+					if (query instanceof Select) {
+						Select select = (Select) query;
+						SelectBody selectbody = select.getSelectBody();
+						if (selectbody instanceof PlainSelect) {
+							PlainSelect plainSelect = (PlainSelect) selectbody;
+							new SelectWrapper(plainSelect).parse();
+						} else {
+							Union union = (Union) selectbody;
+							new UnionWrapper(union).parse();
+						}
+					} else if (query instanceof CreateTable) {
+						cw.createHandler(query, querystr);
+					}
+				} catch (Exception e) {
+					// Report and skip a malformed statement rather than aborting the REPL.
+					System.err.println("Skipping statement: " + e.getMessage());
 				}
-			} else if (query instanceof CreateTable) {
-				cw.createHandler(query, querystr);
+				System.out.println("$>"); // prompt after executing each command
 			}
-			System.out.println("$>"); // print a prompt after executing each command
+
+			if (result == -1) {
+				break; // end of input
+			}
 		}
 	}
 }

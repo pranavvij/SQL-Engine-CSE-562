@@ -115,41 +115,71 @@ dept = 5  ──►  posting list [42, 210, 588] ──► seek each, read one r
 
 ### Prerequisites
 
-- **JDK 8+** (`javac`, `java`)
+- **JDK 8 or later** (`javac`, `java`). Any of 8 / 11 / 17 / 21 works; the bundled jars are Java 8‑era, so 8 or 11 is the closest match. On macOS: `brew install openjdk@11`. Homebrew's `openjdk` is keg‑only, so put it on `PATH` for your shell session first:
+  ```bash
+  export JAVA_HOME=/opt/homebrew/opt/openjdk@11
+  export PATH="$JAVA_HOME/bin:$PATH"
+  ```
 - Bundled dependencies in `lib/`: `jsqlparser-1.0.0.jar`, `evallib-1.0.jar`
 
-### Configure the data directory
-
-Edit `utils/Config.java` and point `databasePath` at the folder holding your CSV files:
-
-```java
-public static String databasePath = "/path/to/your/data/";
-```
-
-### Build
+Verify the toolchain before building:
 
 ```bash
+javac -version   # expect: javac 11.x (or any 8+)
+java -version
+```
+
+> **macOS note:** `/usr/bin/javac` is only Apple's stub and reports *"Unable to locate a Java Runtime"* until a JDK is on `PATH` — export `JAVA_HOME`/`PATH` as above (or add it to your shell profile). This project was last verified on **OpenJDK 11** (Homebrew).
+
+Compiled classes land in `bin/` and the engine writes working state to `createDB/`, `bPlusTreeDir/`, and `tempfolder/`; all four are generated and git‑ignored, so delete them freely to force a clean rebuild.
+
+### Quickstart
+
+Run everything from the **repo root** (paths below are relative to it):
+
+```bash
+# 1. Compile
+mkdir -p bin
 find src -name "*.java" > sources.txt
 javac -cp "lib/jsqlparser-1.0.0.jar:lib/evallib-1.0.jar" -d bin @sources.txt
+
+# 2. Run the example schema + queries against the bundled sample data
+java -cp "bin:lib/jsqlparser-1.0.0.jar:lib/evallib-1.0.jar" dubstep.Main --in-mem < queries.sql
 ```
 
 On Windows, use `;` instead of `:` as the classpath separator.
 
-### Run
+That's it — the repo ships a small, referentially‑consistent TPC‑H sample dataset in **`data/`**, and `Config.databasePath` already points there, so the project runs out of the box.
 
-The engine reads SQL from standard input (statements separated by `;`). Pipe a script in:
+### How it runs
+
+The engine reads SQL from standard input, treating `;` as the statement terminator. It processes `CREATE TABLE` and `SELECT`:
+
+- Each `CREATE TABLE` registers the schema and **builds its indexes by scanning the matching `data/<TABLE>.csv`** (primary B+ tree + any secondary indexes).
+- Each `SELECT` builds an operator tree and streams results to standard output.
+
+`queries.sql` in the repo root contains the full TPC‑H‑style schema (with primary and secondary `INDEX` declarations) plus example queries, so it is the natural script to pipe in.
+
+Flags and modes:
 
 ```bash
+# Default (mixed disk/in-memory)
 java -cp "bin:lib/jsqlparser-1.0.0.jar:lib/evallib-1.0.jar" dubstep.Main < queries.sql
-```
 
-Add `--in-mem` to force in‑memory execution:
-
-```bash
+# Force in-memory execution (required for the index-nested-loop join path,
+# including secondary-index joins and equality-filter index seeks)
 java -cp "bin:lib/jsqlparser-1.0.0.jar:lib/evallib-1.0.jar" dubstep.Main --in-mem < queries.sql
 ```
 
-`queries.sql` in the repo root contains a full TPC‑H‑style schema and example queries to get started.
+> **Rebuilding schema:** on the first run, the `CREATE TABLE` statements are cached under `createDB/` and their indexes are built from `data/`. Subsequent runs replay that cache and **skip the rebuild**. If you change `data/` or the schema, delete the generated directories first: `rm -rf createDB bPlusTreeDir tempfolder`.
+
+### Using your own data
+
+Drop pipe‑delimited `<TABLE>.csv` files (see [Data format](#data-format)) into a directory and point `Config.databasePath` at it in `src/utils/Config.java`, then recompile:
+
+```java
+public static String databasePath = "/path/to/your/data/";
+```
 
 ---
 
@@ -161,7 +191,9 @@ Tables are stored as **pipe‑delimited** (`|`) text files named `<TABLE>.csv` i
 1|155190|7706|1|17|21168.23|0.04|0.02|N|O|1996-03-13|1996-02-12|...
 ```
 
-Dates are `yyyy-mm-dd`. There is no header row — column names and types come from the registered schema.
+Dates are `yyyy-mm-dd`. There is no header row — column names and types come from the registered schema. Rows must be **sorted by the primary‑key column** (the clustered index assumes physical sort order); secondary `INDEX` columns may be in any order.
+
+The bundled `data/` directory contains a tiny valid example of every table (`LINEITEM`, `ORDERS`, `PART`, `CUSTOMER`, `SUPPLIER`, `PARTSUPP`, `NATION`, `REGION`) — enough for the joins and filters in `queries.sql` to return rows. Replace it with full TPC‑H data for a realistic workload.
 
 ---
 
@@ -178,6 +210,7 @@ src/
   FileUtils/      Output/file writers
   interfaces/     UnionWrapper
 lib/              JSQLParser + evallib jars
+data/             Bundled sample CSVs (one per table)
 queries.sql       Example TPC-H-style schema + queries
 ```
 
@@ -189,7 +222,7 @@ Working directories `createDB/`, `bPlusTreeDir/`, `tempfolder/`, and `bin/` are 
 
 - **Read‑oriented**: the engine focuses on `CREATE TABLE` + `SELECT`. `INSERT`/`UPDATE`/`DELETE` are not part of the query path; because posting lists store raw byte offsets, indexes assume the CSV is immutable after build.
 - **Primary index requires sorted input** on the key column; unsorted primary keys should be sorted at load time.
-- `Config.databasePath` is currently a hard‑coded path and must be set for your environment.
+- `Config.databasePath` defaults to the bundled `data/` directory (relative to the launch directory); override it in `src/utils/Config.java` to point at your own dataset.
 
 ## Possible future work
 

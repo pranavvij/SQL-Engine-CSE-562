@@ -8,9 +8,10 @@ public class Config {
 	public static String folderName = "tempfolder/";
 	public static String createFileDir = "createDB/";
 	public static String bPlusTreeDir = "bPlusTreeDir/";
-//	public static String databasePath = "data/";	
-	
-	public static String databasePath = "/Users/pranavvij/Desktop/Database Systems/data/checkpoint3_big/";
+	// Relative to the working directory you launch from. The repo ships a small
+	// sample dataset in data/ so the project runs out of the box; point this at a
+	// larger TPC-H directory to use your own data.
+	public static String databasePath = "data/";
 	
 	
 //	public static String databasePath = "C:\\Users\\ayush\\Documents\\Sanity_Check_Examples\\data\\Database\\";	

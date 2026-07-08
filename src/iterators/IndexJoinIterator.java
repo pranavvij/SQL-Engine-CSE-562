@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import bPlusTree.BPlusTreeBuilder;
+import bPlusTree.SecondaryBPlusTree;
 import net.sf.jsqlparser.expression.PrimitiveValue;
 import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
@@ -22,6 +23,9 @@ public class IndexJoinIterator implements DefaultIterator {
 	
 	private Join join;
 	private BPlusTreeBuilder btree;
+	// When the indexed join column is a secondary (non-clustered) index, we probe
+	// this instead of the primary btree. Exactly one of the two is non-null.
+	private SecondaryBPlusTree secondaryTree;
 	private List<String> columns;
 	Map<String, Integer> columnMapper;
 	Map<String, Integer> indexedColumnMapper;
@@ -48,7 +52,15 @@ public class IndexJoinIterator implements DefaultIterator {
 		this.indexedColumn = indexedColumn;
 		this.nonIndexedColumn = nonIndexedColumn;
 		
-		this.btree = SchemaStructure.bTreeMap.get(indexedColumn.getTable().getName());
+		// Resolve which index backs the join column: a secondary index on this
+		// table+column takes priority; otherwise fall back to the primary btree.
+		String idxTable = indexedColumn.getTable().getName();
+		Map<String, SecondaryBPlusTree> secMap = SchemaStructure.secondaryIndexMap.get(idxTable);
+		if (secMap != null && secMap.get(indexedColumn.getColumnName()) != null) {
+			this.secondaryTree = secMap.get(indexedColumn.getColumnName());
+		} else {
+			this.btree = SchemaStructure.bTreeMap.get(idxTable);
+		}
 		this.nonIndexedColumnStr =  this.nonIndexedColumn.getTable().getName() + "." + this.nonIndexedColumn.getColumnName();
 		this.indexedColumnStr =  this.indexedColumn.getTable().getName() + "." + this.indexedColumn.getColumnName();	
 		this.nextResult = getNextIter();
@@ -97,12 +109,18 @@ public class IndexJoinIterator implements DefaultIterator {
 		if(this.searchIndexIterator == null || !this.searchIndexIterator.hasNext()) {
 			this.nonIndexedTuple = this.nonIndexedIterator.next();
 			if(this.nonIndexedTuple != null) {
-				try {
-					this.searchIndexIterator = this.btree.search(this.nonIndexedTuple
-									.get(this.nonIndexedColumnMapper.get(this.nonIndexedColumnStr)),
-									this.indexedColumnStr, this.queryColumns);
-				} catch (IOException e) {
-					e.printStackTrace();
+				PrimitiveValue key = this.nonIndexedTuple
+						.get(this.nonIndexedColumnMapper.get(this.nonIndexedColumnStr));
+				if(this.secondaryTree != null) {
+					// scattered rows: one seek per matching offset, no read-forward
+					this.searchIndexIterator = this.secondaryTree.search(key, this.queryColumns);
+				} else {
+					try {
+						this.searchIndexIterator = this.btree.search(key,
+								this.indexedColumnStr, this.queryColumns);
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
 				}
 			} else {
 				return null;
