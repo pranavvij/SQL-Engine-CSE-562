@@ -5,3 +5,5 @@
 /bin/
 /sources.txt
 /.claude/
+/.settings/
+.DS_Store
